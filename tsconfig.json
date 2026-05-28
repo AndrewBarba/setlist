@@ -1,0 +1,49 @@
+{
+  "compilerOptions": {
+    // Target modern Node. Node 20+ supports ES2023; Node 23.6+ (our
+    // `engines` floor) trivially handles ES2022. We target ES2022 to
+    // produce small, readable output.
+    "target": "ES2022",
+    "lib": ["ES2023"],
+
+    // ESM output. Our package.json has `"type": "module"`, so .js files
+    // are interpreted as ESM by Node.
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+
+    // Emit JS to dist/, mirroring source structure (lib/, bin/, root).
+    "outDir": "./dist",
+    "rootDir": ".",
+
+    // Type declarations alongside JS.
+    "declaration": true,
+    "declarationMap": false,
+    "sourceMap": false,
+
+    // Library source uses `.js` import extensions (the post-emit form),
+    // while test files use `.ts` extensions so they can be executed by
+    // `node --test` directly without a build step (Node's type-stripping
+    // doesn't resolve `.js` imports to `.ts` files on disk).
+    // `rewriteRelativeImportExtensions` ensures the build emits `.js`
+    // extensions regardless of what the source uses.
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+
+    // Strictness — mirror the dev-time tsconfig values from deno.json.
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+
+    // Standard hygiene.
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+
+    // Pull in Node's ambient types (process, console, node:* modules,
+    // ImportMeta.url, etc.) — needed by the CLI.
+    "types": ["node"]
+  },
+  "include": ["index.ts", "lib/**/*.ts", "bin/**/*.ts"],
+  "exclude": ["tests/**", "node_modules/**", "dist/**"]
+}

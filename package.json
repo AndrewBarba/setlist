@@ -1,0 +1,48 @@
+{
+  "name": "setlist",
+  "version": "0.1.0",
+  "description": "DJ setlist sequencer for dance music — harmonic + tempo compatibility ordering using the Camelot wheel",
+  "keywords": [
+    "bpm",
+    "camelot",
+    "dance-music",
+    "dj",
+    "harmonic-mixing",
+    "setlist"
+  ],
+  "homepage": "https://github.com/andrewbarba/setlist#readme",
+  "license": "MIT",
+  "author": "Andrew Barba <barba@hey.com>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/andrewbarba/setlist.git"
+  },
+  "bin": {
+    "setlist": "./dist/bin/setlist.js"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsgo",
+    "prepack": "deno task build",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test 'tests/*.test.ts'"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.4",
+    "@typescript/native-preview": "^7.0.0-dev.20260527.2"
+  },
+  "engines": {
+    "node": ">=23.6.0"
+  }
+}
