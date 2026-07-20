@@ -22,6 +22,7 @@ USAGE:
 OPTIONS:
   -n, --name <NAME>  djay Pro playlist name (required)
   -s, --seed <N>     Reproducible setlist seed
+  -k, --ignore-bpm   Sequence by harmonic compatibility only
       --db <PATH>    MediaLibrary.db path (defaults to ~/Music/djay/...)
   -h, --help         Show this help
 `;
@@ -54,6 +55,7 @@ function main(): void {
     options: {
       name: { type: "string", short: "n" },
       seed: { type: "string", short: "s" },
+      "ignore-bpm": { type: "boolean", short: "k" },
       db: { type: "string" },
       help: { type: "boolean", short: "h" },
     },
@@ -77,7 +79,10 @@ function main(): void {
   if (tracks.length === 0) throw new Error("CSV contains no tracks");
 
   process.stdout.write(`Sequencing ${tracks.length} tracks from ${basename(inputPath)}...\n`);
-  const orderedTracks = sequence(tracks, { seed }).tracks;
+  const orderedTracks = sequence(tracks, {
+    seed,
+    ignoreBpm: args.values["ignore-bpm"] === true,
+  }).tracks;
   assertUniqueTitles(orderedTracks.map((track) => track.title), "CSV");
 
   const wasRunning = isDjayRunning();

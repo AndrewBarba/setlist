@@ -140,7 +140,15 @@ cat sequenced.csv | setlist                  # parses cleanly
 
 ## djay Pro playlist sync
 
-On macOS, a local djay Pro playlist can be reordered directly from a CSV:
+On macOS, export, sequence, and sync a local djay Pro playlist in one command:
+
+```bash
+npm run djay -- --name "ZOFFAS V2"
+```
+
+Pass `--ignore-bpm` (or `-k`) to sequence by harmonic compatibility only.
+
+To reorder a playlist from an existing CSV instead:
 
 ```bash
 npm run djay:sync -- --name "ZOFFAS V2" ~/Downloads/ZOFFAS\ V2.csv
