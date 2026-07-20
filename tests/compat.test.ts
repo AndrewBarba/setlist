@@ -1,5 +1,5 @@
 import { assert, assertAlmostEquals, assertEquals, test } from "./_helpers.ts";
-import { compatibility } from "../lib/compat.ts";
+import { compatibility, harmonicCompatibility } from "../lib/compat.ts";
 import { harmonicScore } from "../lib/harmonic.ts";
 import { bpmScore } from "../lib/tempo.ts";
 import type { Bpm, CamelotKey, Track } from "../lib/types.ts";
@@ -163,4 +163,43 @@ test("compatibility: matches the underlying geometric-mean formula", () => {
   const b = track({ key: "9A", bpm: 131 }); // diagonal key, +3 BPM
   const expected = Math.sqrt(harmonicScore("8B", "9A") * bpmScore(a.bpm, b.bpm));
   assertAlmostEquals(compatibility(a, b), expected);
+});
+
+test("harmonicCompatibility: ignores BPM entirely", () => {
+  // Same keys, wildly different BPMs — identical scores.
+  const base = harmonicCompatibility(track({ key: "8B", bpm: 128 }), track({ key: "9B", bpm: 128 }));
+  for (const [fromBpm, toBpm] of [[128, 80], [80, 175], [174, 60]] as const) {
+    assertEquals(
+      harmonicCompatibility(track({ key: "8B", bpm: fromBpm }), track({ key: "9B", bpm: toBpm })),
+      base,
+      `BPM ${fromBpm}→${toBpm} leaked into harmonic-only score`,
+    );
+  }
+});
+
+test("harmonicCompatibility: equals raw harmonicScore for non-extended", () => {
+  assertEquals(
+    harmonicCompatibility(track({ key: "8B", bpm: 128 }), track({ key: "9A", bpm: 90 })),
+    harmonicScore("8B", "9A"),
+  );
+});
+
+test("harmonicCompatibility: applies the extended blend", () => {
+  // Opposite-side keys (raw 0.0), extended incoming → floors at α = 0.5.
+  assertAlmostEquals(
+    harmonicCompatibility(
+      track({ key: "1A", bpm: 128 }),
+      track({ key: "7A", bpm: 128, extended: true }),
+    ),
+    0.5,
+  );
+});
+
+test("harmonicCompatibility: compatibility is built from it", () => {
+  const a = track({ key: "8B", bpm: 128 });
+  const b = track({ key: "9A", bpm: 131, extended: true });
+  assertAlmostEquals(
+    compatibility(a, b),
+    Math.sqrt(harmonicCompatibility(a, b) * bpmScore(a.bpm, b.bpm)),
+  );
 });

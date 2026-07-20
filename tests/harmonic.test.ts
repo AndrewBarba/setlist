@@ -102,14 +102,71 @@ test("harmonicScore: canonical Camelot moves", async (t) => {
   });
 });
 
+test("harmonicScore: energy boost mixes (+2 and −5 ≡ +7)", async (t) => {
+  // Mixed In Key's directional "Energy Boost" techniques. Both raise the
+  // sounding pitch of the incoming track — a deliberate energy lift:
+  //   +2  → whole tone up (the primary energy boost, e.g. 5A → 7A)
+  //   −5  → semitone up   (the "Armin Van Buuren variation", ≡ +7)
+
+  await t.test("add 2, same ring → 0.7", () => {
+    assertEquals(harmonicScore("5A", "7A"), 0.7); // MIK's tutorial example
+    assertEquals(harmonicScore("8A", "10A"), 0.7);
+    assertEquals(harmonicScore("8B", "10B"), 0.7); // works on major ring too
+  });
+
+  await t.test("subtract 5, same ring → 0.7", () => {
+    assertEquals(harmonicScore("8A", "3A"), 0.7);
+    assertEquals(harmonicScore("12A", "7A"), 0.7); // Armin, Ultra 2017
+    assertEquals(harmonicScore("8B", "3B"), 0.7); // works on major ring too
+  });
+
+  await t.test("wraps around the wheel", () => {
+    // −5: 3 − 5 = −2 ≡ 10; equivalently 3 + 7 = 10.
+    assertEquals(harmonicScore("3A", "10A"), 0.7);
+    assertEquals(harmonicScore("1B", "8B"), 0.7);
+    // +2: 11 + 2 = 13 ≡ 1; 12 + 2 = 14 ≡ 2.
+    assertEquals(harmonicScore("11B", "1B"), 0.7);
+    assertEquals(harmonicScore("12A", "2A"), 0.7);
+  });
+
+  await t.test("directional: reverses are pitch drops, not boosts", () => {
+    // 3A → 8A drops a semitone — keeps its near-zero table score.
+    assertEquals(harmonicScore("3A", "8A"), 0.05);
+    assertEquals(harmonicScore("7A", "12A"), 0.05);
+    // 7A → 5A drops a whole tone — keeps its workable-but-meh table score.
+    assertEquals(harmonicScore("7A", "5A"), 0.45);
+    assertEquals(harmonicScore("10B", "8B"), 0.45);
+  });
+
+  await t.test("same ring only: mode swap is not the documented move", () => {
+    assertEquals(harmonicScore("8A", "3B"), 0.02);
+    assertEquals(harmonicScore("8B", "3A"), 0.02);
+    assertEquals(harmonicScore("5A", "7B"), 0.25);
+    assertEquals(harmonicScore("5B", "7A"), 0.25);
+  });
+
+  await t.test("ranks between diagonal and canonical moves", () => {
+    for (const boost of [harmonicScore("8A", "3A"), harmonicScore("5A", "7A")]) {
+      const diagonal = harmonicScore("8B", "9A");
+      const adjacent = harmonicScore("8A", "9A");
+      assert(
+        diagonal < boost && boost < adjacent,
+        `expected diagonal (${diagonal}) < boost (${boost}) < adjacent (${adjacent})`,
+      );
+    }
+  });
+});
+
 test("harmonicScore: non-canonical moves degrade", async (t) => {
   await t.test("diagonal (adjacent + mode swap) — workable", () => {
     const s = harmonicScore("8B", "9A");
     assert(s > 0.5 && s < 0.7, `expected 0.5–0.7, got ${s}`);
   });
 
-  await t.test("2-step same mode — energy jump", () => {
-    const s = harmonicScore("8B", "10B");
+  await t.test("2-step same mode, downward — workable but non-canonical", () => {
+    // Counterclockwise (−2, a whole-tone drop): NOT the energy boost —
+    // that's the clockwise +2 direction, covered in the boost tests.
+    const s = harmonicScore("8B", "6B");
     assert(s > 0.3 && s < 0.6, `expected 0.3–0.6, got ${s}`);
   });
 
@@ -123,6 +180,12 @@ test("harmonicScore: monotonic falloff as distance grows", () => {
   // For same-mode pairs, score should weakly decrease as numberDistance
   // increases. We use weak (≤) rather than strict (<) because the table
   // is allowed to plateau at 0.0 for the largest distances.
+  //
+  // This probes clockwise steps +1..+6. The +2 energy-boost override
+  // (0.7) sits on this path but preserves monotonicity (0.9 ≥ 0.7 ≥
+  // 0.25). The −5/+7 boost is NOT on this path — it's distance 5 the
+  // *other* way around; the d=5 probe here (+5, a semitone drop) keeps
+  // its table score. See the energy boost tests above.
   const sameModeScores = [0, 1, 2, 3, 4, 5, 6].map((d) => {
     const target = k(`${((8 + d - 1) % 12) + 1}B`);
     return harmonicScore("8B", target);

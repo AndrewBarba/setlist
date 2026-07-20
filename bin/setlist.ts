@@ -15,15 +15,20 @@ USAGE:
 OPTIONS:
   -f, --format <FMT>      Output format: pretty (default), json, or csv
   -s, --seed <N>          PRNG seed for reproducible output
-  -i, --iterations <N>    Simulated-annealing iterations (default: scales with N)
+  -i, --iterations <N>    Simulated-annealing iterations (default: scales with N,
+                          tuned for best results — several seconds on typical lists)
   -d, --drop-below <X>    Drop tracks that force transitions below this
                           threshold (0–1). Dropped tracks are reported.
+  -k, --ignore-bpm        Sort by key compatibility only. Use when the whole
+                          set will be played at one master tempo, so each
+                          track's recorded BPM is irrelevant.
   -h, --help              Show this help and exit
 
 EXAMPLES:
   cat tracks.csv | setlist
   cat tracks.csv | setlist --format json > sequenced.json
   cat tracks.csv | setlist --seed 42 --drop-below 0.3
+  cat tracks.csv | setlist --ignore-bpm
 
 INPUT:
   CSV on stdin. Required columns: title, key, bpm. Optional: artist.
@@ -54,6 +59,7 @@ async function main(argv: string[]): Promise<number> {
         seed: { type: "string", short: "s" },
         iterations: { type: "string", short: "i" },
         "drop-below": { type: "string", short: "d" },
+        "ignore-bpm": { type: "boolean", short: "k" },
         help: { type: "boolean", short: "h" },
       },
       allowPositionals: true,
@@ -109,7 +115,12 @@ async function main(argv: string[]): Promise<number> {
     return die(`parse error: ${(err as Error).message}`);
   }
 
-  const result = sequence(tracks, { seed, iterations, dropBelow });
+  const result = sequence(tracks, {
+    seed,
+    iterations,
+    dropBelow,
+    ignoreBpm: values["ignore-bpm"] === true,
+  });
   const output = formatFor(format)(result);
   console.log(output);
   return 0;

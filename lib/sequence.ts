@@ -1,4 +1,6 @@
-import { compatibility } from "./compat.ts";
+import { compatibility, harmonicCompatibility } from "./compat.ts";
+import type { ScoreFn } from "./compat.ts";
+import { applyMove, moveDelta, proposeMove } from "./moves.ts";
 import { createRng } from "./rng.ts";
 import type { Track } from "./types.ts";
 
@@ -30,17 +32,23 @@ export interface Sequence {
  *     (every call may produce a different ordering); supply for
  *     reproducible runs (tests, "give me that mix again").
  *   - `iterations`  — number of simulated-annealing steps. Default scales
- *     with input size and is tuned for typical setlists; raising it
- *     yields slightly better quality at proportional cost.
+ *     with input size and is tuned for best results (several seconds on
+ *     typical setlists); lower it if you want speed over quality.
  *   - `dropBelow`   — if provided, iteratively drop tracks that force
  *     transitions below this threshold (in `[0, 1]`). Tracks that don't
  *     fit the flow are removed and reported in `Sequence.dropped`.
  *     Omit (or set to `undefined`) to keep every input track.
+ *   - `ignoreBpm`   — sort by harmonic compatibility only. Use when the
+ *     whole set will be played at a single master tempo (so every
+ *     track's recorded BPM is irrelevant). Transition scores in the
+ *     result are harmonic-only too, and the low-BPM start bias is
+ *     replaced by a uniform random start.
  */
 export interface SequenceOptions {
   seed?: number;
   iterations?: number;
   dropBelow?: number;
+  ignoreBpm?: boolean;
 }
 
 /**
@@ -61,11 +69,16 @@ const T_END = 0.001;
  *
  * Strategy:
  *   1. **Greedy warm start.** Pick a starting track (weighted toward low
- *      BPM) and repeatedly append the highest-compat next track.
- *   2. **Simulated annealing.** Propose neighbor moves (random swap or
- *      relocate), accept improvements unconditionally and regressions
- *      with probability `exp(Δ / T)`. Cool geometrically from `T_START`
- *      to `T_END`. Return the best ordering seen at any point.
+ *      BPM, or uniform when `ignoreBpm` is set) and repeatedly append
+ *      the highest-scoring next track. Transition scoring is
+ *      `compatibility` (harmonic × tempo) or `harmonicCompatibility`
+ *      when `options.ignoreBpm` is set.
+ *   2. **Simulated annealing.** Propose neighbor moves (swap, relocate,
+ *      2-opt segment reversal, or block relocate — see `lib/moves.ts`),
+ *      score them incrementally, accept improvements unconditionally and
+ *      regressions with probability `exp(Δ / T)`. Cool geometrically
+ *      from `T_START` to `T_END`. Return the best ordering seen at any
+ *      point.
  *   3. **Optional filtering.** If `options.dropBelow` is set, iteratively
  *      remove tracks that force transitions below the threshold and
  *      re-sequence the rest. Each drop chooses the endpoint of the worst
@@ -92,47 +105,61 @@ export function sequence(tracks: readonly Track[], options: SequenceOptions = {}
 }
 
 /**
- * Single sequencing pass (greedy warm start + SA, no filtering). The
- * `dropped` field is not part of this result; filtering is layered on top.
+ * Number of independent greedy-start + SA runs per sequencing pass. The
+ * iteration budget is split evenly across restarts and the best result
+ * wins.
+ *
+ * Restarts attack a failure mode that a bigger budget doesn't: the
+ * greedy warm start picks a basin of attraction, and some basins contain
+ * catastrophic seams (e.g. a 0.0-score transition) that annealing can't
+ * escape once cooled — no matter how many iterations it gets. Three
+ * fresh starts give three independent chances to land in a good basin,
+ * at zero additional cost. Empirically (41-track real-world setlist)
+ * this eliminated the occasional zero-seam output at the default budget
+ * and tightened run-to-run variance.
+ */
+const RESTARTS = 3;
+
+/**
+ * Single sequencing pass (greedy warm start + SA with restarts, no
+ * filtering). The `dropped` field is not part of this result; filtering
+ * is layered on top.
  */
 function sequenceCore(
   tracks: readonly Track[],
   options: SequenceOptions,
 ): Omit<Sequence, "dropped"> {
-  // Seed once; the same rng instance drives the warm start, the SA move
-  // selection, and the Metropolis acceptance — so a single seed fully
-  // reproduces a run.
+  // Seed once; the same rng instance drives all restarts — the warm
+  // starts, the SA move selection, and the Metropolis acceptance — so a
+  // single seed fully reproduces a run.
   const seed = options.seed ?? Math.floor(Math.random() * 0xffffffff);
   const rng = createRng(seed);
+  const scoreFn: ScoreFn = options.ignoreBpm ? harmonicCompatibility : compatibility;
 
   // SA iteration count scales as O(n²) — more tracks means more candidate
-  // transitions to explore. The 100× multiplier is empirically tuned to
-  // sit in the "quality plateau" for typical inputs (10–60 tracks):
-  // higher values yield diminishing returns at proportional runtime cost.
-  // The 2000 floor keeps tiny inputs from being under-explored.
-  const iterations = options.iterations ?? Math.max(2000, tracks.length * tracks.length * 100);
+  // transitions to explore. The 6000× multiplier is deliberately tuned
+  // for *best results over speed*: on a 41-track real-world setlist it
+  // runs in ~5s and lands within noise of the global optimum on every
+  // seed, with no catastrophic seams. It's affordable because move
+  // evaluation is incremental (O(edges touched), not O(n)). The 200k
+  // floor keeps tiny inputs from being under-explored (they're fast
+  // regardless). Pass explicit `iterations` to trade quality for speed.
+  const iterations = options.iterations ?? Math.max(200_000, tracks.length * tracks.length * 6000);
+  const perRestart = Math.floor(iterations / RESTARTS);
 
-  const initial = greedyConstruct(tracks, rng);
-  const optimized = simulatedAnnealing(initial, iterations, rng);
-  return materializeSequence(optimized);
+  let best: Track[] | undefined;
+  let bestScore = -Infinity;
+  for (let r = 0; r < RESTARTS; r++) {
+    const initial = greedyConstruct(tracks, rng, scoreFn, options.ignoreBpm === true);
+    const optimized = simulatedAnnealing(initial, perRestart, rng, scoreFn);
+    const score = totalScore(optimized, scoreFn);
+    if (score > bestScore) {
+      best = optimized;
+      bestScore = score;
+    }
+  }
+  return materializeSequence(best!, scoreFn);
 }
-
-/**
- * Iteration multiplier for the inner SA passes that drive drop decisions.
- *
- * The drop algorithm reacts to SA's worst transition: if SA can't find a
- * good arrangement for a particular track, that track looks like an
- * outlier and gets dropped. But "SA failed at default iteration count"
- * is very different from "this track genuinely can't fit". To avoid
- * dropping tracks that *could* fit if SA tried harder, we use a much
- * higher iteration multiplier here than the default sequencing path.
- *
- * Empirically, `n² × 500` reliably finds near-global-optimum arrangements
- * for typical setlists (10–60 tracks); higher values show diminishing
- * returns. The `50_000` floor handles tiny inputs.
- */
-const DROP_ITERATION_MULTIPLIER = 500;
-const DROP_ITERATION_FLOOR = 50_000;
 
 /**
  * Iterative drop loop: sequence, find worst transition, drop the
@@ -143,11 +170,13 @@ const DROP_ITERATION_FLOOR = 50_000;
  * either the source or the destination of the bad transition. We
  * disambiguate by trying both removals and keeping whichever produces a
  * higher re-sequenced total. That costs 2 extra sequencing passes per
- * drop, which for typical inputs (a handful of drops) is negligible.
+ * drop — expect `--drop-below` runs to take a small multiple of the
+ * plain sequencing time.
  *
- * Each inner sequencing pass uses an elevated iteration budget (see
- * `DROP_ITERATION_MULTIPLIER`) so drop decisions are based on
- * near-global-optimum arrangements, not on SA's local-optimum noise.
+ * Drop decisions depend on SA finding the genuine best arrangement (a
+ * track only looks like an outlier if it can't fit even in a
+ * near-optimal ordering). The default iteration budget is already tuned
+ * for near-optimal results, so inner passes simply use it as-is.
  */
 function sequenceWithDropping(
   tracks: readonly Track[],
@@ -157,17 +186,9 @@ function sequenceWithDropping(
   let current: Track[] = tracks.slice();
   const dropped: Track[] = [];
 
-  // Pull dropBelow out so the inner pass doesn't recurse. Also boost the
-  // iteration count when the user hasn't pinned it — drop decisions
-  // depend on SA finding the genuine best arrangement, not a local one.
+  // Pull dropBelow out so the inner pass doesn't recurse.
   const innerOptions: SequenceOptions = { ...options };
   delete innerOptions.dropBelow;
-  if (innerOptions.iterations === undefined) {
-    innerOptions.iterations = Math.max(
-      DROP_ITERATION_FLOOR,
-      tracks.length * tracks.length * DROP_ITERATION_MULTIPLIER,
-    );
-  }
 
   while (current.length >= 2) {
     const result = sequenceCore(current, innerOptions);
@@ -233,13 +254,21 @@ function emptySequence(): Sequence {
 }
 
 /**
- * Choose a starting-track index, weighted toward lower BPMs.
+ * Choose a starting-track index.
  *
- * The lowest-BPM track is most likely to be chosen; higher BPMs taper
- * down to a `+1` floor weight (so even the fastest track has a non-zero
- * chance). SA can override this choice if a different start scores higher.
+ * Normally weighted toward lower BPMs: the lowest-BPM track is most
+ * likely to be chosen; higher BPMs taper down to a `+1` floor weight (so
+ * even the fastest track has a non-zero chance). SA can override this
+ * choice if a different start scores higher.
+ *
+ * When `ignoreBpm` is set, BPM carries no meaning, so the start is
+ * uniform random instead. Either path consumes exactly one rng draw.
  */
-function pickStartIndex(tracks: readonly Track[], rng: () => number): number {
+function pickStartIndex(tracks: readonly Track[], rng: () => number, ignoreBpm: boolean): number {
+  if (ignoreBpm) {
+    return Math.floor(rng() * tracks.length);
+  }
+
   let maxBpm = -Infinity;
   for (const t of tracks) {
     if (t.bpm > maxBpm) maxBpm = t.bpm;
@@ -257,12 +286,18 @@ function pickStartIndex(tracks: readonly Track[], rng: () => number): number {
 }
 
 /**
- * Greedy construction. Pick a start, then repeatedly take the highest-
- * compat track from the remaining pool. Ties broken by input order.
+ * Greedy construction. Pick a start, then repeatedly take the
+ * highest-scoring next track from the remaining pool. Ties broken by
+ * input order.
  */
-function greedyConstruct(tracks: readonly Track[], rng: () => number): Track[] {
+function greedyConstruct(
+  tracks: readonly Track[],
+  rng: () => number,
+  scoreFn: ScoreFn,
+  ignoreBpm: boolean,
+): Track[] {
   const remaining = tracks.slice();
-  const startIdx = pickStartIndex(remaining, rng);
+  const startIdx = pickStartIndex(remaining, rng, ignoreBpm);
   const [start] = remaining.splice(startIdx, 1);
   const ordered: Track[] = [start!];
 
@@ -271,7 +306,7 @@ function greedyConstruct(tracks: readonly Track[], rng: () => number): Track[] {
     let bestIdx = 0;
     let bestScore = -Infinity;
     for (let i = 0; i < remaining.length; i++) {
-      const score = compatibility(last, remaining[i]!);
+      const score = scoreFn(last, remaining[i]!);
       if (score > bestScore) {
         bestScore = score;
         bestIdx = i;
@@ -285,65 +320,69 @@ function greedyConstruct(tracks: readonly Track[], rng: () => number): Track[] {
 }
 
 /**
- * Simulated annealing over swap/relocate moves. Returns the best-seen
- * ordering across all iterations.
+ * How often (in iterations) to recompute the running score from scratch.
+ *
+ * The SA loop tracks `currentScore` by accumulating incremental move
+ * deltas. Each accumulation can introduce ~1 ulp of floating-point error;
+ * over millions of iterations that drift is still far below any real
+ * score difference (~1e-11 vs deltas of ~1e-3), but a periodic O(n)
+ * resync makes the invariant airtight for negligible cost.
  */
-function simulatedAnnealing(initial: Track[], iterations: number, rng: () => number): Track[] {
-  let current = initial.slice();
-  let currentScore = totalCompat(current);
+const RESYNC_INTERVAL = 100_000;
+
+/**
+ * Simulated annealing over the symbolic move set (swap, relocate,
+ * segment reversal, block relocate — see `lib/moves.ts`). Returns the
+ * best-seen ordering across all iterations.
+ *
+ * Move scoring is incremental: each proposal is evaluated via
+ * `moveDelta` (O(edges touched)) rather than rescanning the whole
+ * ordering (O(n)), and only *accepted* moves mutate the current array.
+ * This is what makes the default iteration budget affordable.
+ */
+function simulatedAnnealing(
+  initial: Track[],
+  iterations: number,
+  rng: () => number,
+  scoreFn: ScoreFn,
+): Track[] {
+  if (initial.length < 2 || iterations <= 0) return initial.slice();
+
+  const current = initial.slice();
+  let currentScore = totalScore(current, scoreFn);
   let best = current.slice();
   let bestScore = currentScore;
 
-  const cooling = iterations > 0 ? Math.exp(Math.log(T_END / T_START) / iterations) : 1;
+  const cooling = Math.exp(Math.log(T_END / T_START) / iterations);
   let T = T_START;
 
   for (let iter = 0; iter < iterations; iter++) {
-    const proposal = neighbor(current, rng);
-    const proposalScore = totalCompat(proposal);
-    const delta = proposalScore - currentScore;
+    const move = proposeMove(current.length, rng);
+    const delta = moveDelta(current, move, scoreFn);
 
     if (delta > 0 || rng() < Math.exp(delta / T)) {
-      current = proposal;
-      currentScore = proposalScore;
+      applyMove(current, move);
+      currentScore += delta;
       if (currentScore > bestScore) {
         best = current.slice();
         bestScore = currentScore;
       }
     }
     T *= cooling;
+
+    if ((iter + 1) % RESYNC_INTERVAL === 0) {
+      currentScore = totalScore(current, scoreFn);
+    }
   }
 
   return best;
 }
 
-/**
- * Generate a neighbor ordering: 50% swap two random positions, 50%
- * relocate a track from one position to another. Both preserve the
- * permutation invariant.
- */
-function neighbor(arr: Track[], rng: () => number): Track[] {
-  const result = arr.slice();
-  const n = arr.length;
-  if (n < 2) return result;
-
-  const i = Math.floor(rng() * n);
-  let j = Math.floor(rng() * n);
-  while (j === i) j = Math.floor(rng() * n);
-
-  if (rng() < 0.5) {
-    [result[i], result[j]] = [result[j]!, result[i]!];
-  } else {
-    const [moved] = result.splice(i, 1);
-    result.splice(j, 0, moved!);
-  }
-  return result;
-}
-
-/** Sum of pairwise compatibilities along the ordering. */
-function totalCompat(tracks: readonly Track[]): number {
+/** Sum of pairwise transition scores along the ordering. */
+function totalScore(tracks: readonly Track[], scoreFn: ScoreFn): number {
   let total = 0;
   for (let i = 0; i < tracks.length - 1; i++) {
-    total += compatibility(tracks[i]!, tracks[i + 1]!);
+    total += scoreFn(tracks[i]!, tracks[i + 1]!);
   }
   return total;
 }
@@ -353,11 +392,11 @@ function totalCompat(tracks: readonly Track[]): number {
  * the `dropped` field, which is layered on by the caller). Transitions
  * are recomputed from scratch so the exposed scores are authoritative.
  */
-function materializeSequence(tracks: Track[]): Omit<Sequence, "dropped"> {
+function materializeSequence(tracks: Track[], scoreFn: ScoreFn): Omit<Sequence, "dropped"> {
   const transitions: number[] = [];
   let total = 0;
   for (let i = 0; i < tracks.length - 1; i++) {
-    const score = compatibility(tracks[i]!, tracks[i + 1]!);
+    const score = scoreFn(tracks[i]!, tracks[i + 1]!);
     transitions.push(score);
     total += score;
   }

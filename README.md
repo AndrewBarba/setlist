@@ -63,9 +63,12 @@ USAGE:
 OPTIONS:
   -f, --format <FMT>      Output format: pretty (default), json, or csv
   -s, --seed <N>          PRNG seed for reproducible output
-  -i, --iterations <N>    SA iterations (default scales with input size)
+  -i, --iterations <N>    SA iterations (default scales with input size and is
+                          tuned for best results — several seconds on typical lists)
   -d, --drop-below <X>    Drop tracks that force transitions below this
                           threshold (0–1). Dropped tracks are reported.
+  -k, --ignore-bpm        Sort by key compatibility only (for sets played at
+                          a single master tempo)
   -h, --help              Show usage
 ```
 
@@ -118,8 +121,11 @@ cat tracks.csv | setlist --format json > sequenced.json
 # Drop tracks that force any transition below 0.1
 cat tracks.csv | setlist --drop-below 0.1
 
-# Higher-quality optimization (slower)
-cat tracks.csv | setlist --iterations 500000
+# Playing the whole set at one master tempo? Sort by key only.
+cat tracks.csv | setlist --ignore-bpm
+
+# Faster, lower-quality optimization (the default favors quality)
+cat tracks.csv | setlist --iterations 200000
 
 # Output CSV, re-sequence later
 cat tracks.csv | setlist --format csv > sequenced.csv
@@ -219,17 +225,40 @@ indexed by `(numberDistance, modeSwap)`:
 | ------------------------------------ | --------- | --------- |
 | 0 (identical / relative major-minor) | 1.00      | 0.90      |
 | 1 (perfect 5th/4th / diagonal)       | 0.90      | 0.55      |
-| 2                                    | 0.45      | 0.25      |
+| 2 (but see energy boosts below)      | 0.45      | 0.25      |
 | 3                                    | 0.25      | 0.10      |
 | 4                                    | 0.10      | 0.05      |
-| 5                                    | 0.05      | 0.02      |
+| 5 (but see energy boosts below)      | 0.05      | 0.02      |
 | 6 (opposite side)                    | 0.00      | 0.00      |
 
 The wheel is circular — `1B → 12B` is one step, not eleven. Values are
 calibrated to standard DJ-mixing conventions: same key and relative
-minor/major are both excellent; one wheel step is the canonical "energy
-boost" or "energy drop"; opposite-side jumps are effectively unmixable
-on harmonic grounds alone.
+minor/major are both excellent; one wheel step is the canonical
+compatible move; opposite-side jumps are effectively unmixable on
+harmonic grounds alone.
+
+**The energy boost exceptions (+2 and −5 / +7 mixes).** Two moves are
+*directional* overrides that score **0.70** on the same ring, both from
+Mixed In Key's "Energy Boost" playbook. Each Camelot step is a perfect
+fifth (7 semitones), so:
+
+- **+2** (e.g. `5A → 7A`): +14 ≡ +2 semitones — the incoming track
+  sounds a whole tone higher. MIK's primary energy boost; also fairly
+  smooth (the keys share 5 of 7 pitches).
+- **−5 ≡ +7** (e.g. `12A → 7A`, `8A → 3A`): +49 ≡ +1 semitone — one
+  semitone higher. The "Armin Van Buuren variation"; a bigger perceived
+  lift, harsher during long blends.
+
+The overrides only apply going *up*: the reverses (`7A → 5A` whole-tone
+drop, `3A → 8A` semitone drop) keep their table scores (0.45 / 0.05),
+and mode-swapped variants aren't the documented technique and keep
+theirs too. This makes `harmonicScore(from, to)` asymmetric —
+consistent with the tempo score, which already prefers up over down.
+
+The 0.70 weight is deliberate: above the diagonal (0.55) so a boost is
+a genuinely attractive bridge, but below canonical moves (0.90) so the
+sequencer only reaches for it when no same-key / ±1 / relative option
+exists — "use in moderation," encoded as relative ordering.
 
 ### 2. Tempo (BPM scoring with half/double-time folding)
 
@@ -289,19 +318,56 @@ clashes can't be papered over.
 1. **Greedy warm start.** Pick a starting track (weighted random,
    biased toward low BPM) and append the highest-compat next track at
    each step. Produces a decent baseline ordering quickly.
-2. **Simulated annealing.** Propose neighbor moves (50% swap two random
-   positions, 50% relocate a track from one position to another).
-   Accept improvements unconditionally; accept regressions with
-   probability `exp(Δ / T)`. Cool geometrically from `T = 0.5` to
-   `T = 0.001` over the iteration count.
-3. **Return the best-seen ordering** across all iterations, not the
+2. **Simulated annealing.** Propose neighbor moves — 25% swap two
+   random positions, 25% relocate a single track, 35% 2-opt segment
+   reversal, 15% relocate a contiguous block of 2–4 tracks. Accept
+   improvements unconditionally; accept regressions with probability
+   `exp(Δ / T)`. Cool geometrically from `T = 0.5` to `T = 0.001` over
+   the iteration count.
+
+   The segment moves matter because the objective is *asymmetric*
+   (tempo trend + directional energy boosts): greedy often builds
+   coherent runs pointed the wrong way, and flipping a run via single
+   swaps means crossing a deep score valley that annealing won't cross
+   at low temperature. Reversal fixes a mis-directed run in one move.
+   Without these moves the search reliably pins itself in local optima
+   on larger lists (~0.2–0.7 total score below optimum, with high
+   run-to-run variance).
+3. **Restarts.** The iteration budget is split across 3 independent
+   greedy-start + SA runs; the best result wins. Restarts attack a
+   failure mode a bigger budget can't: a greedy start can land in a
+   basin containing a catastrophic seam (e.g. a 0.0 transition) that
+   annealing can't escape once cooled. Three fresh starts are three
+   independent chances at a good basin, for the same total cost.
+4. **Return the best-seen ordering** across all iterations, not the
    final SA state (which may have wandered).
 
-Default iteration count: `max(2000, n² × 100)`. This is empirically in
-the quality plateau for typical setlists (10–60 tracks). Override with
-`--iterations` if you want longer/shorter searches.
+Move proposals are scored *incrementally* — only the edges a move
+touches are re-evaluated (O(1) for swaps and block moves, O(segment)
+for reversals) instead of rescanning the whole ordering. This makes
+each iteration ~10× cheaper at typical sizes, which funds a much larger
+default budget.
 
-### 6. Optional filtering (`--drop-below`)
+Default iteration count: `max(200000, n² × 6000)`, deliberately tuned
+for **best results over speed** — roughly 5 seconds on a 41-track list,
+where it lands within noise of the global optimum on every seed with no
+catastrophic seams. Pass a lower `--iterations` if you want speed over
+quality (results degrade gracefully).
+
+### 6. BPM-agnostic mode (`--ignore-bpm`)
+
+When the whole set will be played at a single master tempo, each
+track's recorded BPM is irrelevant — sorting should be purely harmonic.
+With `--ignore-bpm` (`ignoreBpm: true` in the API):
+
+- Transitions are scored with `harmonicCompatibility` — the Camelot
+  harmonic score with the extended-track blend, no tempo term.
+- Reported transition scores are harmonic-only too.
+- The greedy warm start picks a uniform random starting track instead
+  of biasing toward low BPM.
+- `--drop-below` still works and drops harmonic outliers.
+
+### 7. Optional filtering (`--drop-below`)
 
 When `--drop-below <threshold>` is set, the algorithm iteratively
 removes tracks that force transitions below the threshold:
@@ -313,10 +379,12 @@ removes tracks that force transitions below the threshold:
    whichever endpoint yields a higher re-sequenced total.
 4. Repeat.
 
-Drop decisions are sensitive to SA quality, so the filter internally
-uses a higher iteration multiplier (`n² × 500` with a `50,000` floor)
-than the default sequencing path. This ensures drops are based on
-near-global-optimum arrangements, not on local-optimum noise.
+Drop decisions are sensitive to SA quality — a track only looks like a
+genuine outlier if it can't fit even in a near-optimal arrangement. The
+default iteration budget is already tuned for near-optimal results, so
+inner passes use it as-is. Note each drop costs up to 3 extra
+sequencing passes, so `--drop-below` runs take a small multiple of the
+plain sequencing time.
 
 The threshold is **inclusive** — `--drop-below 0` catches literal
 zero-score transitions; `--drop-below 0.3` catches anything at or below

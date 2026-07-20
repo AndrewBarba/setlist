@@ -44,6 +44,13 @@ export interface CamelotDistance {
  *   - `(6, ...)`      — opposite side of the wheel. Effectively unmixable
  *     for harmonic purposes; only an extended-track bridge will save it.
  *
+ * Note: distances 2 and 5, same mode, have *directional* exceptions —
+ * the "energy boost" mixes (+2 and −5 ≡ +7) — handled in
+ * {@link harmonicScore} before this table is consulted. The table values
+ * cover only the non-boost directions: −2 (a whole-tone drop; still
+ * workable, keys share 5 of 7 pitches) and +5 ≡ −7 (a semitone drop;
+ * near-unmixable).
+ *
  * The numbers are deliberately tunable from one place rather than buried
  * in a formula. Sweep them during sequencer tuning if needed.
  */
@@ -56,6 +63,37 @@ const HARMONIC_SCORE_TABLE: readonly (readonly [number, number])[] = [
   /* numDist 5 */ [0.05, 0.02],
   /* numDist 6 */ [0.0, 0.0],
 ];
+
+/**
+ * Score for the "energy boost" mixes — Mixed In Key's two documented
+ * directional techniques, both staying on the same ring:
+ *
+ *   - **+2** (the primary energy boost): add 2 to the key code, e.g.
+ *     `5A → 7A`. Each Camelot step is a perfect fifth (7 semitones), so
+ *     +2 steps ≡ 14 ≡ +2 semitones — the incoming track sounds a whole
+ *     tone higher. Keys share 5 of 7 pitches, so it's also reasonably
+ *     smooth harmonically.
+ *   - **−5 ≡ +7** (the "Armin Van Buuren variation"): subtract 5, e.g.
+ *     `12A → 7A`, `8A → 3A`. 7 steps ≡ 49 ≡ +1 semitone: one semitone
+ *     higher — a bigger perceived lift, harsher during a long blend.
+ *
+ * Crucially both are directional. The reverses (−2 = whole-tone drop,
+ * +5 ≡ −7 = semitone drop) are not recognized techniques and keep their
+ * table scores.
+ *
+ * Weighted at 0.7: above the diagonal (0.55) so a boost is a genuinely
+ * good option, but below the canonical moves (0.9) so the sequencer only
+ * reaches for it when no ±1 / same-key / relative option exists —
+ * matching the "use it in moderation" guidance for these techniques.
+ */
+const ENERGY_BOOST_SCORE = 0.7;
+
+/**
+ * Clockwise step counts (see {@link clockwiseSteps}) that qualify as an
+ * energy boost when the mode is unchanged: +2 (whole tone up) and
+ * +7 ≡ −5 (semitone up).
+ */
+const ENERGY_BOOST_STEPS: ReadonlySet<number> = new Set([2, 7]);
 
 /**
  * Decompose a Camelot key string into its number and mode.
@@ -80,6 +118,17 @@ function circularDist(a: number, b: number, modulus: number): number {
 }
 
 /**
+ * Signed clockwise steps from `from` to `to` on the 12-position wheel,
+ * in `0..11`. E.g. `steps(8, 3)` is `7` (equivalently −5 counterclockwise)
+ * — the energy-boost move. Unlike `circularDist`, this preserves
+ * direction, which matters because some Camelot techniques only work one
+ * way around the wheel.
+ */
+function clockwiseSteps(from: number, to: number): number {
+  return (to - from + 12) % 12;
+}
+
+/**
  * Measure the wheel distance and mode relationship between two Camelot keys.
  *
  * `numberDistance` is the shortest path around the 12-position circle (0–6);
@@ -98,20 +147,38 @@ export function camelotDistance(a: CamelotKey, b: CamelotKey): CamelotDistance {
 }
 
 /**
- * Harmonic-compatibility score between two Camelot keys, in `[0, 1]`.
+ * Harmonic-compatibility score for the transition `from → to`, in `[0, 1]`.
  *
  * `1.0` = identical key; `0.9` = a canonical Camelot move (adjacent number
- * or relative minor/major); values degrade as the wheel distance grows.
- * `0.0` indicates the opposite side of the wheel — essentially unmixable on
- * harmonic grounds alone.
+ * or relative minor/major); `0.7` = a directional "energy boost" mix
+ * (+2 or −5 ≡ +7 on the same ring, e.g. `5A → 7A`, `8A → 3A` — see
+ * {@link ENERGY_BOOST_SCORE}); values otherwise degrade as the wheel
+ * distance grows. `0.0` indicates the opposite side of the wheel —
+ * essentially unmixable on harmonic grounds alone.
+ *
+ * NOTE: because of the energy-boost rules this function is *not*
+ * symmetric — `harmonicScore("8A", "3A")` is `0.7` while
+ * `harmonicScore("3A", "8A")` is `0.05`. Argument order is
+ * outgoing-track, incoming-track.
  *
  * The exact curve lives in {@link HARMONIC_SCORE_TABLE}, which is
  * deliberately hand-tuned rather than computed: standard Camelot mixing
  * theory doesn't follow a clean exponential, and explicit values are easier
  * to reason about and adjust during sequencer tuning.
  */
-export function harmonicScore(a: CamelotKey, b: CamelotKey): number {
-  const { numberDistance, modeSwap } = camelotDistance(a, b);
+export function harmonicScore(from: CamelotKey, to: CamelotKey): number {
+  const df = decompose(from);
+  const dt = decompose(to);
+  const modeSwap = df.mode !== dt.mode;
+
+  // Energy boosts (+2 or −5 ≡ +7, same ring): the incoming track sounds
+  // a whole tone / semitone higher respectively. Directional — the
+  // reverse moves are pitch drops and fall through to their table scores.
+  if (!modeSwap && ENERGY_BOOST_STEPS.has(clockwiseSteps(df.number, dt.number))) {
+    return ENERGY_BOOST_SCORE;
+  }
+
+  const numberDistance = circularDist(df.number, dt.number, 12);
   // numberDistance is constrained to 0..6 by circularDist, so this lookup
   // is always defined; the non-null assertion is safe.
   const row = HARMONIC_SCORE_TABLE[numberDistance]!;

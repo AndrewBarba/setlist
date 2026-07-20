@@ -14,7 +14,8 @@ export { camelotDistance, harmonicScore } from "./lib/harmonic.ts";
 export type { BpmDelta } from "./lib/tempo.ts";
 export { bpmDelta, bpmScore } from "./lib/tempo.ts";
 
-export { compatibility } from "./lib/compat.ts";
+export type { ScoreFn } from "./lib/compat.ts";
+export { compatibility, harmonicCompatibility } from "./lib/compat.ts";
 
 export type { Sequence, SequenceOptions } from "./lib/sequence.ts";
 export { sequence } from "./lib/sequence.ts";

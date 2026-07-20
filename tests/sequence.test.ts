@@ -241,6 +241,61 @@ test("sequence: respects iterations=0 (returns greedy result)", () => {
   assertEquals(result.transitions.length, 2);
 });
 
+test("sequence: ignoreBpm sorts by key only", () => {
+  // A harmonic chain 8B → 9B → 10B → 11B whose BPMs are deliberately
+  // hostile to it (big drops and jumps). With BPM in play, the chain is
+  // torn apart; with ignoreBpm, the wheel walk should win and every
+  // transition should score as a pure harmonic move (≥ 0.9).
+  const tracks: Track[] = [
+    track({ title: "c", key: "10B", bpm: 175 }),
+    track({ title: "a", key: "8B", bpm: 128 }),
+    track({ title: "d", key: "11B", bpm: 90 }),
+    track({ title: "b", key: "9B", bpm: 70 }),
+  ];
+  const result = sequence(tracks, { seed: 1, ignoreBpm: true });
+
+  for (const t of result.transitions) {
+    assert(t >= 0.9, `expected pure harmonic transitions ≥ 0.9, got ${t}`);
+  }
+  const keys = result.tracks.map((t) => t.key).join(",");
+  assert(
+    keys === "8B,9B,10B,11B" || keys === "11B,10B,9B,8B",
+    `expected a wheel walk, got ${keys}`,
+  );
+});
+
+test("sequence: ignoreBpm transition scores are harmonic-only", () => {
+  // Identical keys, terrible BPM transition — with ignoreBpm the
+  // reported transition must be 1.0 (BPM must not leak into output).
+  const a = track({ title: "a", key: "8B", bpm: 128 });
+  const b = track({ title: "b", key: "8B", bpm: 80 });
+  const result = sequence([a, b], { seed: 1, ignoreBpm: true });
+  assertEquals(result.transitions, [1.0]);
+  assertEquals(result.totalScore, 1.0);
+});
+
+test("sequence: ignoreBpm still respects dropBelow (harmonic outlier)", () => {
+  // Cluster around 8B, plus a 2A outlier. 2A is opposite-side (0.0)
+  // against 8B/8A, and distance-5-with-mode-swap (0.02) against 9B in
+  // both directions — the mode swap rules out an energy-boost rescue
+  // (2B → 9B would be the +7 boost at 0.7 and would NOT be droppable).
+  // BPMs are all identical so only harmonics can trigger the drop.
+  const cluster: Track[] = [
+    track({ title: "c1", key: "8B", bpm: 124 }),
+    track({ title: "c2", key: "8A", bpm: 124 }),
+    track({ title: "c3", key: "9B", bpm: 124 }),
+  ];
+  const outlier = track({ title: "outlier", key: "2A", bpm: 124 });
+
+  const result = sequence([...cluster, outlier], {
+    seed: 3,
+    ignoreBpm: true,
+    dropBelow: 0.3,
+  });
+  assertEquals(result.dropped.length, 1);
+  assertEquals(result.dropped[0]!.title, "outlier");
+});
+
 test("sequence: dropped is empty when no filtering requested", () => {
   const tracks: Track[] = [
     track({ title: "a", key: "8B", bpm: 120 }),
