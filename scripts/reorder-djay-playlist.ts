@@ -16,7 +16,7 @@ const DEFAULT_DB = join(
 const HELP = `Reorder a djay Pro playlist using setlist
 
 USAGE:
-  npm run djay -- --name <PLAYLIST> <tracks.csv>
+  npm run djay:sync -- --name <PLAYLIST> <tracks.csv>
   node scripts/reorder-djay-playlist.ts --name <PLAYLIST> <tracks.csv>
 
 OPTIONS:

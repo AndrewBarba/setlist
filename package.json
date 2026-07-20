@@ -34,8 +34,10 @@
   },
   "scripts": {
     "build": "tsgo",
-    "djay": "node scripts/reorder-djay-playlist.ts",
+    "djay:export": "node scripts/export-djay-playlist.ts",
+    "djay:sync": "node scripts/reorder-djay-playlist.ts",
     "prepack": "deno task build",
+    "setlist": "node bin/setlist.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --test 'tests/*.test.ts'"
   },

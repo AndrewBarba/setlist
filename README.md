@@ -143,7 +143,7 @@ cat sequenced.csv | setlist                  # parses cleanly
 On macOS, a local djay Pro playlist can be reordered directly from a CSV:
 
 ```bash
-npm run djay -- --name "ZOFFAS V2" ~/Downloads/ZOFFAS\ V2.csv
+npm run djay:sync -- --name "ZOFFAS V2" ~/Downloads/ZOFFAS\ V2.csv
 ```
 
 This runs the setlist sequencer, matches every CSV title to the named djay
@@ -153,6 +153,23 @@ backup is created beside `MediaLibrary.db` before every change.
 
 Use `--seed <N>` for reproducible sequencing or `--db <PATH>` for a non-default
 djay media library location. The script requires the macOS `sqlite3` command.
+
+Export a playlist in its current djay order using the same CSV shape:
+
+```bash
+npm run djay:export -- --name "ZOFFAS V2" --output ~/Downloads/ZOFFAS\ V2.csv
+```
+
+Omit `--output` to write the CSV to stdout. Exporting is read-only and does not
+require djay Pro to quit.
+
+When piping through npm scripts, use `--silent` so npm's command banner does not
+pollute the CSV stream:
+
+```bash
+npm run --silent djay:export -- --name "ZOFFAS V2" |
+  npm run --silent setlist -- --format csv
+```
 
 ## Library
 
