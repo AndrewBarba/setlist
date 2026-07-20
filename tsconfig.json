@@ -44,6 +44,6 @@
     // ImportMeta.url, etc.) — needed by the CLI.
     "types": ["node"]
   },
-  "include": ["index.ts", "lib/**/*.ts", "bin/**/*.ts"],
+  "include": ["index.ts", "lib/**/*.ts", "bin/**/*.ts", "scripts/**/*.ts"],
   "exclude": ["tests/**", "node_modules/**", "dist/**"]
 }

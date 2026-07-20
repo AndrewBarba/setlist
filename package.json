@@ -34,6 +34,7 @@
   },
   "scripts": {
     "build": "tsgo",
+    "djay": "node scripts/reorder-djay-playlist.ts",
     "prepack": "deno task build",
     "typecheck": "tsc --noEmit",
     "test": "node --test 'tests/*.test.ts'"

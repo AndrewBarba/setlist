@@ -138,6 +138,22 @@ cat sequenced.csv | setlist                  # parses cleanly
 - `1` — runtime error (bad input, parse failure, empty stdin)
 - `2` — usage error (invalid flag)
 
+## djay Pro playlist sync
+
+On macOS, a local djay Pro playlist can be reordered directly from a CSV:
+
+```bash
+npm run djay -- --name "ZOFFAS V2" ~/Downloads/ZOFFAS\ V2.csv
+```
+
+This runs the setlist sequencer, matches every CSV title to the named djay
+playlist, and updates its order. If djay Pro is open, the script quits it
+before modifying the database and reopens it afterward. A timestamped database
+backup is created beside `MediaLibrary.db` before every change.
+
+Use `--seed <N>` for reproducible sequencing or `--db <PATH>` for a non-default
+djay media library location. The script requires the macOS `sqlite3` command.
+
 ## Library
 
 The library is exported from `index.ts`. Public API:
